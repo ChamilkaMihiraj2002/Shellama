@@ -1,4 +1,4 @@
-# test
+# Shellama
 
 To install dependencies:
 
