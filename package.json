@@ -1,8 +1,11 @@
 {
-  "name": "test",
-  "module": "index.ts",
+  "name": "shellama",
+  "module": "index.tsx",
   "type": "module",
   "private": true,
+  "bin": {
+    "shellama": "./index.tsx"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.2.14"

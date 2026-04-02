@@ -6,11 +6,21 @@ To install dependencies:
 bun install
 ```
 
-To run:
+To run from this repo:
 
 ```bash
 bun run index.tsx
 ```
+
+To use `shellama` from any project folder:
+
+```bash
+bun linkv
+cd /path/to/another/project
+shellama
+```
+
+`shellama` uses the terminal's current working directory, so if you launch it inside another project, that project becomes the workspace it reads.
 
 Shellama now sends the current workspace files along with your prompts, so local Ollama models behave more like a lightweight repo-aware coding assistant instead of a plain chat box.
 
