@@ -5,7 +5,7 @@ import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { chatWithModel, listModelNames } from '../../services/ollamaService';
 import { DEFAULT_MODEL, getModelSource, toModelOptions } from '../../utils/model';
-import type { ModelOption } from '../../types/model';
+import type { ChatMessage, ModelOption } from '../../types/model';
 import { formatOllamaError } from '../../utils/ollamaError';
 
 const MODEL_AVATARS = [
@@ -36,7 +36,8 @@ export const ChatApp = () => {
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [isSelectingModel, setIsSelectingModel] = useState(true);
   const [modelError, setModelError] = useState('');
-  const [response, setResponse] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -102,7 +103,7 @@ export const ChatApp = () => {
   const handleModelSelection = (item: ModelOption) => {
     setSelectedModel(item.value);
     setIsSelectingModel(false);
-    setResponse(`Selected model: ${item.value}`);
+    setStatusMessage(`Selected model: ${item.value}`);
   };
 
   useInput((input, key) => {
@@ -118,52 +119,81 @@ export const ChatApp = () => {
     if (key.escape) {
       setIsSelectingModel(false);
     }
+
+    if ((key.ctrl || key.meta) && input.toLowerCase() === 'l') {
+      setMessages([]);
+      setStatusMessage('Conversation cleared.');
+      setQuery('');
+    }
   });
 
-  const handleOpenAI = async () => {
+  const handleSubmit = async () => {
     if (loadingModels) {
-      setResponse('Model list is still loading. Please wait a moment and try again.');
+      setStatusMessage('Model list is still loading. Please wait a moment and try again.');
       return;
     }
 
     const trimmedQuery = query.trim();
 
     if (!trimmedQuery) {
-      setResponse('Enter a prompt before sending a request.');
+      setStatusMessage('Enter a prompt before sending a request.');
       return;
     }
 
+    const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: trimmedQuery }];
+
     setLoading(true);
-    setResponse('');
+    setQuery('');
+    setStatusMessage('');
+    setMessages(nextMessages);
 
     try {
-      const content = await chatWithModel(selectedModel, trimmedQuery);
-      setResponse(content);
+      const content = await chatWithModel(selectedModel, nextMessages);
+      const finalContent = content.includes('CREATE_FILE:')
+        ? await handleFileCreation(content)
+        : content;
 
-      if (content.includes('CREATE_FILE:')) {
-        handleFileCreation(content);
-      }
+      setMessages((prev) => [...prev, { role: 'assistant', content: finalContent }]);
     } catch (err) {
-      setResponse(formatOllamaError(err, selectedModel));
+      setStatusMessage(formatOllamaError(err, selectedModel));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFileCreation = (text: string) => {
-    const match = text.match(/CREATE_FILE: ([\w.]+) CONTENT: ([\s\S]+)/);
-    if (match) {
-      const fileName = match[1];
-      const fileContent = match[2];
+  const extractFileContent = (rawContent: string) => {
+    const trimmed = rawContent.trim();
+    const fencedMatch = trimmed.match(/^```[\w-]*\n([\s\S]*?)\n```/);
 
-      if (!fileName || !fileContent) {
-        setResponse((prev) => prev + '\n\nUnable to create file: missing file content.');
-        return;
-      }
-
-      Bun.write(fileName, fileContent.trim());
-      setResponse((prev) => prev + `\n\n✅ File "${fileName}" created successfully!`);
+    if (fencedMatch?.[1]) {
+      return fencedMatch[1].trim();
     }
+
+    const trailingNoteIndex = trimmed.search(/\n(?:Let me know|I can|Would you like|Here'?s|This file)/i);
+
+    if (trailingNoteIndex >= 0) {
+      return trimmed.slice(0, trailingNoteIndex).trim();
+    }
+
+    return trimmed;
+  };
+
+  const handleFileCreation = async (text: string) => {
+    const match = text.match(/CREATE_FILE:\s+([^\s]+)\s+CONTENT:\s+([\s\S]+)/);
+
+    if (!match) {
+      return `${text}\n\nUnable to create file: invalid file creation format.`;
+    }
+
+    const [, fileName = '', rawFileContent = ''] = match;
+    const fileContent = extractFileContent(rawFileContent);
+
+    if (!fileName || !fileContent) {
+      return `${text}\n\nUnable to create file: missing file content.`;
+    }
+
+    await Bun.write(fileName, fileContent.trim());
+    return `${text}\n\nFile "${fileName}" created successfully.`;
   };
 
   return (
@@ -190,7 +220,7 @@ export const ChatApp = () => {
             <Text color={selectedModelSource === 'Cloud' ? 'yellow' : 'green'}>
               {selectedModelSource} model ready
             </Text>
-            <Text color="gray">Pick a model, type a prompt, and press Enter.</Text>
+            <Text color="gray">Pick a model, type a coding prompt, and press Enter.</Text>
           </Box>
         </Box>
 
@@ -205,23 +235,25 @@ export const ChatApp = () => {
             <Text color="green" bold>
               Available models
             </Text>
-            <Text color="gray">Local and cloud models with generated icons.</Text>
+            <Text color="gray">Local and cloud models with workspace-aware coding context.</Text>
             {isSelectingModel ? (
               <Box marginBottom={1}>
                 <SelectInput items={modelOptions} onSelect={handleModelSelection} />
               </Box>
             ) : (
               <Box marginBottom={1}>
-                <Text color="gray">Press Ctrl/Cmd+P to change model. Use arrows + Enter, Esc to close.</Text>
+                <Text color="gray">
+                  Press Ctrl/Cmd+P to change model. Ctrl/Cmd+L clears chat. Use arrows + Enter, Esc to close.
+                </Text>
               </Box>
             )}
           </Box>
         )}
       </Box>
 
-      {modelError && (
+      {(modelError || statusMessage) && (
         <Box marginTop={1} marginBottom={1}>
-          <Text color="red">{modelError}</Text>
+          <Text color={modelError ? 'red' : 'yellow'}>{modelError || statusMessage}</Text>
         </Box>
       )}
 
@@ -231,7 +263,7 @@ export const ChatApp = () => {
             &gt;
           </Text>
           <Text> </Text>
-          <TextInput value={query} onChange={setQuery} onSubmit={handleOpenAI} />
+          <TextInput value={query} onChange={setQuery} onSubmit={handleSubmit} />
         </Box>
       )}
 
@@ -249,9 +281,16 @@ export const ChatApp = () => {
         </Box>
       )}
 
-      {response && (
-        <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1}>
-          <Text>{response}</Text>
+      {messages.length > 0 && (
+        <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
+          {messages.slice(-6).map((message, index) => (
+            <Box key={`${message.role}-${index}`} marginTop={index === 0 ? 0 : 1} flexDirection="column">
+              <Text color={message.role === 'user' ? accentColor : 'green'} bold>
+                {message.role === 'user' ? 'You' : 'Assistant'}
+              </Text>
+              <Text>{message.content}</Text>
+            </Box>
+          ))}
         </Box>
       )}
     </Box>

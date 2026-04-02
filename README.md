@@ -12,6 +12,17 @@ To run:
 bun run index.tsx
 ```
 
+Shellama now sends the current workspace files along with your prompts, so local Ollama models behave more like a lightweight repo-aware coding assistant instead of a plain chat box.
+
+Usage tips:
+
+```text
+- Pick a local model from the selector
+- Ask coding questions about the repo
+- Press Ctrl/Cmd+P to switch models
+- Press Ctrl/Cmd+L to clear the conversation
+```
+
 Project structure:
 
 ```text
