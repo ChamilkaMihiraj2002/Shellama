@@ -1,5 +1,6 @@
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { WorkspaceContextSummary } from '../types/model';
 
 const IGNORED_DIRS = new Set(['.git', 'dist', 'node_modules', '.idea', '.vscode']);
 const IGNORED_FILES = new Set(['bun.lock']);
@@ -136,10 +137,11 @@ const readSnippet = async (rootDir: string, filePath: string) => {
   return content.slice(0, MAX_FILE_CHARS).trim();
 };
 
-export const buildWorkspaceContext = async (rootDir = getWorkspaceRootFromTerminal()) => {
+const collectWorkspaceContext = async (rootDir: string) => {
   const files = (await collectFiles(rootDir)).slice(0, MAX_FILES);
   let usedChars = 0;
-  const sections: string[] = [];
+  const excerptedFiles: string[] = [];
+  const snippets: string[] = [];
 
   for (const filePath of files) {
     const snippet = await readSnippet(rootDir, filePath);
@@ -153,15 +155,46 @@ export const buildWorkspaceContext = async (rootDir = getWorkspaceRootFromTermin
     }
 
     usedChars += snippet.length;
-    sections.push(`File: ${filePath}\n\`\`\`${toCodeFence(filePath)}\n${snippet}\n\`\`\``);
+    excerptedFiles.push(filePath);
+    snippets.push(snippet);
   }
 
-  return [
-    `Workspace root: ${path.basename(rootDir)}`,
-    'Workspace files:',
-    ...files.map((filePath) => `- ${filePath}`),
-    '',
-    'Workspace excerpts:',
-    ...sections,
-  ].join('\n');
+  return {
+    summary: {
+      rootName: path.basename(rootDir),
+      rootPath: rootDir,
+      files,
+      excerptedFiles,
+      usedChars,
+      maxChars: MAX_TOTAL_CHARS,
+    } satisfies WorkspaceContextSummary,
+    snippets,
+  };
 };
+
+export const buildWorkspaceContextPayload = async (rootDir = getWorkspaceRootFromTerminal()) => {
+  const { summary, snippets } = await collectWorkspaceContext(rootDir);
+
+  return {
+    summary,
+    prompt: [
+      `Workspace root: ${summary.rootName}`,
+      'Workspace files:',
+      ...summary.files.map((filePath) => `- ${filePath}`),
+      '',
+      'Workspace excerpts:',
+      ...summary.excerptedFiles.map((filePath, index) => {
+        const snippet = snippets[index];
+
+        return `File: ${filePath}\n\`\`\`${toCodeFence(filePath)}\n${snippet}\n\`\`\``;
+      }),
+    ].join('\n'),
+  };
+};
+
+export const buildWorkspaceContext = async (rootDir = getWorkspaceRootFromTerminal()) =>
+  (await buildWorkspaceContextPayload(rootDir)).prompt;
+
+export const getWorkspaceContextSummary = async (
+  rootDir = getWorkspaceRootFromTerminal(),
+): Promise<WorkspaceContextSummary> => (await collectWorkspaceContext(rootDir)).summary;

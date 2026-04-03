@@ -1,34 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import path from 'node:path';
 import { Text, Box, useInput } from 'ink';
-import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
-import SelectInput from 'ink-select-input';
 import { chatWithModel, listModelNames } from '../../services/ollamaService';
-import { getWorkspaceRootFromTerminal, resolveWorkspaceRoot } from '../../services/workspaceContext';
-import { DEFAULT_MODEL, getModelSource, toModelOptions } from '../../utils/model';
-import type { ChatMessage, ModelOption } from '../../types/model';
+import {
+  getWorkspaceContextSummary,
+  getWorkspaceRootFromTerminal,
+} from '../../services/workspaceContext';
+import { DEFAULT_MODEL } from '../../utils/model';
+import type { ChatMessage, ChatUsage, ModelOption, WorkspaceContextSummary } from '../../types/model';
 import { formatOllamaError } from '../../utils/ollamaError';
-
-const MODEL_AVATARS = [
-  [' /^^\\\\ ', '| oo |', ' \\__// '],
-  [' .--. ', '/_.._\\\\', '\\_--_/'],
-  [' .-. ', '(o o)', '| O \\\\', " '~~~'"],
-  [' .-"""-. ', '/ .===. \\\\', '\\ \\___/ /', " '-----' "],
-  [' [***] ', '[o o ]', '[___ ]'],
-  [' .---. ', '|^ ^|', '|_-_|'],
-] as const;
-
-const hashText = (value: string) =>
-  [...value].reduce((total, char) => total + char.charCodeAt(0), 0);
-
-const getAvatarForModel = (model: string) =>
-  MODEL_AVATARS[hashText(model) % MODEL_AVATARS.length] ?? MODEL_AVATARS[0];
-
-const getAccentColor = (model: string) => {
-  const colors = ['cyan', 'green', 'yellow', 'blue', 'magenta'] as const;
-  return colors[hashText(model) % colors.length] ?? 'cyan';
-};
+import { ChatComposer } from './components/ChatComposer';
+import { ChatHeader } from './components/ChatHeader';
+import { ChatSidebar } from './components/ChatSidebar';
+import { ConversationPanel } from './components/ConversationPanel';
+import { ModelPicker } from './components/ModelPicker';
+import { WorkspaceContextPanel } from './components/WorkspaceContextPanel';
+import { createFileFromResponse, handleWorkspaceCommand } from './utils/chatCommands';
+import { getAccentColor, getAvatarForModel, toModelSelectionOptions } from './utils/chatDisplay';
 
 export const ChatApp = () => {
   const [query, setQuery] = useState('');
@@ -41,10 +29,40 @@ export const ChatApp = () => {
   const [statusMessage, setStatusMessage] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState('');
+  const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceContextSummary | null>(null);
+  const [usage, setUsage] = useState<ChatUsage | null>(null);
 
   useEffect(() => {
     setWorkspaceRoot(getWorkspaceRootFromTerminal());
   }, []);
+
+  useEffect(() => {
+    if (!workspaceRoot) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadWorkspaceSummary = async () => {
+      try {
+        const summary = await getWorkspaceContextSummary(workspaceRoot);
+
+        if (isMounted) {
+          setWorkspaceSummary(summary);
+        }
+      } catch {
+        if (isMounted) {
+          setWorkspaceSummary(null);
+        }
+      }
+    };
+
+    loadWorkspaceSummary();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [workspaceRoot]);
 
   useEffect(() => {
     let isMounted = true;
@@ -95,53 +113,9 @@ export const ChatApp = () => {
     };
   }, []);
 
-  const selectedModelSource = getModelSource(selectedModel);
   const selectedAvatar = useMemo(() => getAvatarForModel(selectedModel), [selectedModel]);
   const accentColor = useMemo(() => getAccentColor(selectedModel), [selectedModel]);
-  const modelOptions = useMemo(
-    () =>
-      toModelOptions(models).map((option) => ({
-        ...option,
-        label: `${option.value} · ${getModelSource(option.value)}`,
-      })),
-    [models],
-  );
-
-  const handleWorkspaceCommand = async (rawQuery: string) => {
-    const trimmed = rawQuery.trim();
-
-    if (/^pwd$/i.test(trimmed)) {
-      setStatusMessage(`Workspace: ${workspaceRoot}`);
-      setMessages((prev) => [...prev, { role: 'assistant', content: workspaceRoot }]);
-      return true;
-    }
-
-    const switchMatch = trimmed.match(/^(?:pwd|cd)\s+(.+)$/i);
-
-    if (!switchMatch) {
-      return false;
-    }
-
-    const requestedPath = switchMatch[1]?.trim() ?? '';
-
-    if (!requestedPath) {
-      setStatusMessage('Enter a directory path after pwd or cd.');
-      return true;
-    }
-
-    try {
-      const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath);
-      setWorkspaceRoot(nextWorkspaceRoot);
-      setStatusMessage(`Workspace changed to ${nextWorkspaceRoot}`);
-      setMessages((prev) => [...prev, { role: 'assistant', content: nextWorkspaceRoot }]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to change workspace.';
-      setStatusMessage(message);
-      setMessages((prev) => [...prev, { role: 'assistant', content: message }]);
-    }
-
-    return true;
-  };
+  const modelOptions = useMemo(() => toModelSelectionOptions(models), [models]);
 
   const handleModelSelection = (item: ModelOption) => {
     setSelectedModel(item.value);
@@ -165,6 +139,7 @@ export const ChatApp = () => {
 
     if ((key.ctrl || key.meta) && input.toLowerCase() === 'l') {
       setMessages([]);
+      setUsage(null);
       setStatusMessage('Conversation cleared.');
       setQuery('');
     }
@@ -189,18 +164,32 @@ export const ChatApp = () => {
     setStatusMessage('');
     setMessages(nextMessages);
 
-    if (await handleWorkspaceCommand(trimmedQuery)) {
+    const workspaceCommandResult = await handleWorkspaceCommand(
+      trimmedQuery,
+      workspaceRoot,
+      setWorkspaceRoot,
+    );
+
+    if (workspaceCommandResult.handled) {
+      setStatusMessage(workspaceCommandResult.statusMessage ?? '');
+
+      if (workspaceCommandResult.assistantMessage) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: workspaceCommandResult.assistantMessage }]);
+      }
+
       return;
     }
 
     setLoading(true);
 
     try {
-      const content = await chatWithModel(selectedModel, nextMessages, workspaceRoot);
-      const finalContent = content.includes('CREATE_FILE:')
-        ? await handleFileCreation(content)
-        : content;
+      const result = await chatWithModel(selectedModel, nextMessages, workspaceRoot);
+      const finalContent = result.content.includes('CREATE_FILE:')
+        ? await createFileFromResponse(result.content, workspaceRoot)
+        : result.content;
 
+      setUsage(result.usage);
+      setWorkspaceSummary(result.workspaceContext);
       setMessages((prev) => [...prev, { role: 'assistant', content: finalContent }]);
     } catch (err) {
       setStatusMessage(formatOllamaError(err, selectedModel));
@@ -209,113 +198,35 @@ export const ChatApp = () => {
     }
   };
 
-  const extractFileContent = (rawContent: string) => {
-    const trimmed = rawContent.trim();
-    const fencedMatch = trimmed.match(/^```[\w-]*\n([\s\S]*?)\n```/);
-
-    if (fencedMatch?.[1]) {
-      return fencedMatch[1].trim();
-    }
-
-    const trailingNoteIndex = trimmed.search(/\n(?:Let me know|I can|Would you like|Here'?s|This file)/i);
-
-    if (trailingNoteIndex >= 0) {
-      return trimmed.slice(0, trailingNoteIndex).trim();
-    }
-
-    return trimmed;
-  };
-
-  const handleFileCreation = async (text: string) => {
-    const match = text.match(/CREATE_FILE:\s+([^\s]+)\s+CONTENT:\s+([\s\S]+)/);
-
-    if (!match) {
-      return `${text}\n\nUnable to create file: invalid file creation format.`;
-    }
-
-    const [, fileName = '', rawFileContent = ''] = match;
-    const fileContent = extractFileContent(rawFileContent);
-
-    if (!fileName || !fileContent) {
-      return `${text}\n\nUnable to create file: missing file content.`;
-    }
-
-    const outputPath = path.isAbsolute(fileName) ? fileName : path.join(workspaceRoot, fileName);
-
-    await Bun.write(outputPath, fileContent.trim());
-    return `${text}\n\nFile "${fileName}" created successfully in "${workspaceRoot}".`;
-  };
-
   return (
     <Box flexDirection="column" padding={1}>
-      <Box borderStyle="round" borderColor="gray" paddingX={1} paddingY={0} flexDirection="column">
-        <Box justifyContent="space-between">
-          <Text color="gray">Shellama Workspace Assistant</Text>
-          <Text color="gray">Ctrl/Cmd+P models</Text>
-        </Box>
+      <ChatHeader />
 
-        <Box marginTop={1}>
-          <Box flexDirection="column" marginRight={2}>
-            {selectedAvatar.map((line, index) => (
-              <Text key={`${selectedModel}-avatar-${index}`} color={accentColor} bold>
-                {line}
-              </Text>
-            ))}
-          </Box>
+      <ChatSidebar
+        accentColor={accentColor}
+        messages={messages}
+        selectedAvatar={selectedAvatar}
+        selectedModel={selectedModel}
+        usage={usage}
+        workspaceRoot={workspaceRoot}
+        workspaceSummary={workspaceSummary}
+      />
 
-          <Box flexDirection="column">
-            <Text color={accentColor} bold>
-              {selectedModel}
-            </Text>
-            <Text color={selectedModelSource === 'Cloud' ? 'yellow' : 'green'}>
-              {selectedModelSource} model ready
-            </Text>
-            <Text color="gray">Pick a model, ask about this workspace or anything else, and press Enter.</Text>
-            {workspaceRoot ? <Text color="gray">Workspace: {workspaceRoot}</Text> : null}
-          </Box>
-        </Box>
-
-        {loadingModels ? (
-          <Box marginTop={1}>
-            <Text color="yellow">
-              <Spinner type="dots" /> Loading models from Ollama...
-            </Text>
-          </Box>
-        ) : (
-          <Box marginTop={1} flexDirection="column">
-            <Text color="green" bold>
-              Available models
-            </Text>
-            <Text color="gray">Local and cloud models with workspace-aware context.</Text>
-            {isSelectingModel ? (
-              <Box marginBottom={1}>
-                <SelectInput items={modelOptions} onSelect={handleModelSelection} />
-              </Box>
-            ) : (
-              <Box marginBottom={1}>
-                <Text color="gray">
-                  Press Ctrl/Cmd+P to change model. Ctrl/Cmd+L clears chat. Use arrows + Enter, Esc to close.
-                </Text>
-              </Box>
-            )}
-          </Box>
-        )}
-      </Box>
+      <ModelPicker
+        isSelectingModel={isSelectingModel}
+        loadingModels={loadingModels}
+        modelOptions={modelOptions}
+        onSelect={handleModelSelection}
+      />
 
       {(modelError || statusMessage) && (
-        <Box marginTop={1} marginBottom={1}>
+        <Box marginTop={1}>
           <Text color={modelError ? 'red' : 'yellow'}>{modelError || statusMessage}</Text>
         </Box>
       )}
 
       {!isSelectingModel && (
-        <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1}>
-          <Text color={accentColor} bold>
-            &gt;
-          </Text>
-          <Text> </Text>
-          <TextInput value={query} onChange={setQuery} onSubmit={handleSubmit} />
-        </Box>
+        <ChatComposer accentColor={accentColor} query={query} setQuery={setQuery} onSubmit={handleSubmit} />
       )}
 
       {isSelectingModel && !loadingModels && (
@@ -332,18 +243,13 @@ export const ChatApp = () => {
         </Box>
       )}
 
-      {messages.length > 0 && (
-        <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-          {messages.slice(-6).map((message, index) => (
-            <Box key={`${message.role}-${index}`} marginTop={index === 0 ? 0 : 1} flexDirection="column">
-              <Text color={message.role === 'user' ? accentColor : 'green'} bold>
-                {message.role === 'user' ? 'You' : 'Assistant'}
-              </Text>
-              <Text>{message.content}</Text>
-            </Box>
-          ))}
-        </Box>
-      )}
+      <Box marginTop={1}>
+        {workspaceSummary && (
+          <WorkspaceContextPanel accentColor={accentColor} workspaceSummary={workspaceSummary} />
+        )}
+
+        {messages.length > 0 && <ConversationPanel accentColor={accentColor} messages={messages} />}
+      </Box>
     </Box>
   );
 };
