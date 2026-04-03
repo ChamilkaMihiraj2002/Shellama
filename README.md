@@ -116,3 +116,5 @@ Project structure:
 ```
 
 This project was created using `bun init` in bun v1.3.11. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+
+<img width="1292" height="969" alt="Screenshot 2026-04-03 at 3 29 55 PM" src="https://github.com/user-attachments/assets/4fe1031e-335b-49a8-9b2b-fd6e716d28b9" />
