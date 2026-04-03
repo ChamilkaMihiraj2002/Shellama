@@ -12,6 +12,67 @@ To run from this repo:
 bun run index.tsx
 ```
 
+To build a Windows `.exe` from this repo:
+
+```bash
+bun run build:win
+```
+
+This writes the executable to:
+
+```text
+dist/shellama.exe
+```
+
+If you need wider compatibility for older Windows x64 CPUs without AVX2 support, use:
+
+```bash
+bun run build:win:baseline
+```
+
+To build a macOS executable for Apple Silicon:
+
+```bash
+bun run build:mac
+```
+
+This writes:
+
+```text
+dist/shellama-macos-arm64
+```
+
+To build an Intel macOS executable:
+
+```bash
+bun run build:mac:intel
+```
+
+This writes:
+
+```text
+dist/shellama-macos-x64
+```
+
+To build both macOS variants:
+
+```bash
+bun run build:mac:all
+```
+
+Compiled application files are also available in:
+
+```text
+compile applications/
+```
+
+Current prebuilt apps in that folder:
+
+```text
+compile applications/shellama.exe
+compile applications/shellama-macos-arm64
+```
+
 To use `shellama` from any project folder:
 
 ```bash
