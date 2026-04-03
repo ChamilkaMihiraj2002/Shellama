@@ -22,13 +22,15 @@ shellama
 
 `shellama` uses the terminal's current working directory, so if you launch it inside another project, that project becomes the workspace it reads.
 
-Shellama now sends the current workspace files along with your prompts, so local Ollama models behave more like a lightweight repo-aware coding assistant instead of a plain chat box.
+On startup, Shellama resolves that workspace directly from the terminal session before the first conversation turn, then shows the active folder in the UI.
+
+Shellama now sends the current workspace files along with your prompts, so local Ollama models behave more like a lightweight workspace-aware assistant instead of a plain chat box.
 
 Usage tips:
 
 ```text
 - Pick a local model from the selector
-- Ask coding questions about the repo
+- Ask coding, documentation, scripting, or general workspace questions
 - Press Ctrl/Cmd+P to switch models
 - Press Ctrl/Cmd+L to clear the conversation
 ```
