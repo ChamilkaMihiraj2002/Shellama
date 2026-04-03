@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import path from 'node:path';
 import { Text, Box, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { chatWithModel, listModelNames } from '../../services/ollamaService';
+import { getWorkspaceRootFromTerminal, resolveWorkspaceRoot } from '../../services/workspaceContext';
 import { DEFAULT_MODEL, getModelSource, toModelOptions } from '../../utils/model';
 import type { ChatMessage, ModelOption } from '../../types/model';
 import { formatOllamaError } from '../../utils/ollamaError';
@@ -38,6 +40,11 @@ export const ChatApp = () => {
   const [modelError, setModelError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [workspaceRoot, setWorkspaceRoot] = useState('');
+
+  useEffect(() => {
+    setWorkspaceRoot(getWorkspaceRootFromTerminal());
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -100,6 +107,42 @@ export const ChatApp = () => {
     [models],
   );
 
+  const handleWorkspaceCommand = async (rawQuery: string) => {
+    const trimmed = rawQuery.trim();
+
+    if (/^pwd$/i.test(trimmed)) {
+      setStatusMessage(`Workspace: ${workspaceRoot}`);
+      setMessages((prev) => [...prev, { role: 'assistant', content: workspaceRoot }]);
+      return true;
+    }
+
+    const switchMatch = trimmed.match(/^(?:pwd|cd)\s+(.+)$/i);
+
+    if (!switchMatch) {
+      return false;
+    }
+
+    const requestedPath = switchMatch[1]?.trim() ?? '';
+
+    if (!requestedPath) {
+      setStatusMessage('Enter a directory path after pwd or cd.');
+      return true;
+    }
+
+    try {
+      const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath);
+      setWorkspaceRoot(nextWorkspaceRoot);
+      setStatusMessage(`Workspace changed to ${nextWorkspaceRoot}`);
+      setMessages((prev) => [...prev, { role: 'assistant', content: nextWorkspaceRoot }]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to change workspace.';
+      setStatusMessage(message);
+      setMessages((prev) => [...prev, { role: 'assistant', content: message }]);
+    }
+
+    return true;
+  };
+
   const handleModelSelection = (item: ModelOption) => {
     setSelectedModel(item.value);
     setIsSelectingModel(false);
@@ -142,13 +185,18 @@ export const ChatApp = () => {
 
     const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: trimmedQuery }];
 
-    setLoading(true);
     setQuery('');
     setStatusMessage('');
     setMessages(nextMessages);
 
+    if (await handleWorkspaceCommand(trimmedQuery)) {
+      return;
+    }
+
+    setLoading(true);
+
     try {
-      const content = await chatWithModel(selectedModel, nextMessages);
+      const content = await chatWithModel(selectedModel, nextMessages, workspaceRoot);
       const finalContent = content.includes('CREATE_FILE:')
         ? await handleFileCreation(content)
         : content;
@@ -192,15 +240,17 @@ export const ChatApp = () => {
       return `${text}\n\nUnable to create file: missing file content.`;
     }
 
-    await Bun.write(fileName, fileContent.trim());
-    return `${text}\n\nFile "${fileName}" created successfully.`;
+    const outputPath = path.isAbsolute(fileName) ? fileName : path.join(workspaceRoot, fileName);
+
+    await Bun.write(outputPath, fileContent.trim());
+    return `${text}\n\nFile "${fileName}" created successfully in "${workspaceRoot}".`;
   };
 
   return (
     <Box flexDirection="column" padding={1}>
       <Box borderStyle="round" borderColor="gray" paddingX={1} paddingY={0} flexDirection="column">
         <Box justifyContent="space-between">
-          <Text color="gray">Ollama CLI Assistant</Text>
+          <Text color="gray">Shellama Workspace Assistant</Text>
           <Text color="gray">Ctrl/Cmd+P models</Text>
         </Box>
 
@@ -220,7 +270,8 @@ export const ChatApp = () => {
             <Text color={selectedModelSource === 'Cloud' ? 'yellow' : 'green'}>
               {selectedModelSource} model ready
             </Text>
-            <Text color="gray">Pick a model, type a coding prompt, and press Enter.</Text>
+            <Text color="gray">Pick a model, ask about this workspace or anything else, and press Enter.</Text>
+            {workspaceRoot ? <Text color="gray">Workspace: {workspaceRoot}</Text> : null}
           </Box>
         </Box>
 
@@ -235,7 +286,7 @@ export const ChatApp = () => {
             <Text color="green" bold>
               Available models
             </Text>
-            <Text color="gray">Local and cloud models with workspace-aware coding context.</Text>
+            <Text color="gray">Local and cloud models with workspace-aware context.</Text>
             {isSelectingModel ? (
               <Box marginBottom={1}>
                 <SelectInput items={modelOptions} onSelect={handleModelSelection} />

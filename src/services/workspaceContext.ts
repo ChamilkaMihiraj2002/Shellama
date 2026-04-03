@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const IGNORED_DIRS = new Set(['.git', 'dist', 'node_modules', '.idea', '.vscode']);
@@ -8,17 +8,55 @@ const RELEVANT_EXTENSIONS = new Set([
   '.tsx',
   '.js',
   '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.rb',
+  '.go',
+  '.rs',
+  '.java',
+  '.sh',
+  '.zsh',
   '.json',
   '.md',
+  '.txt',
   '.css',
   '.scss',
   '.html',
   '.yml',
   '.yaml',
+  '.toml',
+  '.ini',
+  '.env',
+  '.sql',
 ]);
 const MAX_FILES = 12;
 const MAX_FILE_CHARS = 3500;
 const MAX_TOTAL_CHARS = 18000;
+
+export const getWorkspaceRootFromTerminal = () => {
+  const result = Bun.spawnSync(['pwd'], {
+    cwd: process.cwd(),
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+
+  const resolvedPath = result.success ? result.stdout.toString().trim() : '';
+
+  return resolvedPath || process.cwd();
+};
+
+export const resolveWorkspaceRoot = async (inputPath?: string) => {
+  const candidatePath = inputPath?.trim() ? inputPath.trim() : getWorkspaceRootFromTerminal();
+  const absolutePath = path.resolve(candidatePath);
+  const details = await stat(absolutePath);
+
+  if (!details.isDirectory()) {
+    throw new Error(`Not a directory: ${absolutePath}`);
+  }
+
+  return absolutePath;
+};
 
 const sortByPriority = (files: string[]) =>
   [...files].sort((left, right) => {
@@ -98,8 +136,7 @@ const readSnippet = async (rootDir: string, filePath: string) => {
   return content.slice(0, MAX_FILE_CHARS).trim();
 };
 
-export const buildWorkspaceContext = async () => {
-  const rootDir = process.cwd();
+export const buildWorkspaceContext = async (rootDir = getWorkspaceRootFromTerminal()) => {
   const files = (await collectFiles(rootDir)).slice(0, MAX_FILES);
   let usedChars = 0;
   const sections: string[] = [];
@@ -121,10 +158,10 @@ export const buildWorkspaceContext = async () => {
 
   return [
     `Workspace root: ${path.basename(rootDir)}`,
-    'Project files:',
+    'Workspace files:',
     ...files.map((filePath) => `- ${filePath}`),
     '',
-    'Project excerpts:',
+    'Workspace excerpts:',
     ...sections,
   ].join('\n');
 };
