@@ -1,5 +1,10 @@
 # Shellama
 
+Prerequisite:
+
+- Install Bun first: https://bun.sh
+- On Windows, open a new terminal after installation so the `bun` command is added to `PATH`
+
 To install dependencies:
 
 ```bash

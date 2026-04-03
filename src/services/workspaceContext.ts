@@ -35,20 +35,51 @@ const MAX_FILES = 12;
 const MAX_FILE_CHARS = 3500;
 const MAX_TOTAL_CHARS = 18000;
 
+const normalizeWorkspacePath = (rawPath: string) => {
+  const trimmedPath = rawPath.trim();
+
+  if (!trimmedPath) {
+    return process.cwd();
+  }
+
+  if (process.platform === 'win32') {
+    const posixDrivePathMatch = trimmedPath.match(/^\/([a-zA-Z])(?:\/(.*))?$/);
+
+    if (posixDrivePathMatch) {
+      const [, drive = '', rest = ''] = posixDrivePathMatch;
+      const normalizedRest = rest.replace(/\//g, '\\');
+
+      return path.normalize(`${drive.toUpperCase()}:\\${normalizedRest}`);
+    }
+  }
+
+  return path.normalize(trimmedPath);
+};
+
 export const getWorkspaceRootFromTerminal = () => {
-  const result = Bun.spawnSync(['pwd'], {
-    cwd: process.cwd(),
-    stdout: 'pipe',
-    stderr: 'ignore',
-  });
+  const envPath = process.env.PWD?.trim();
 
-  const resolvedPath = result.success ? result.stdout.toString().trim() : '';
+  if (envPath) {
+    return normalizeWorkspacePath(envPath);
+  }
 
-  return resolvedPath || process.cwd();
+  try {
+    const result = Bun.spawnSync(['pwd'], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'ignore',
+    });
+
+    const resolvedPath = result.success ? result.stdout.toString().trim() : '';
+
+    return normalizeWorkspacePath(resolvedPath || process.cwd());
+  } catch {
+    return normalizeWorkspacePath(process.cwd());
+  }
 };
 
 export const resolveWorkspaceRoot = async (inputPath?: string) => {
-  const candidatePath = inputPath?.trim() ? inputPath.trim() : getWorkspaceRootFromTerminal();
+  const candidatePath = inputPath?.trim() ? normalizeWorkspacePath(inputPath) : getWorkspaceRootFromTerminal();
   const absolutePath = path.resolve(candidatePath);
   const details = await stat(absolutePath);
 
