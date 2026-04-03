@@ -34,22 +34,38 @@ const RELEVANT_EXTENSIONS = new Set([
 const MAX_FILES = 12;
 const MAX_FILE_CHARS = 3500;
 const MAX_TOTAL_CHARS = 18000;
+const WORKSPACE_CACHE_TTL_MS = 5_000;
 
-export const getWorkspaceRootFromTerminal = () => {
-  const result = Bun.spawnSync(['pwd'], {
-    cwd: process.cwd(),
-    stdout: 'pipe',
-    stderr: 'ignore',
-  });
-
-  const resolvedPath = result.success ? result.stdout.toString().trim() : '';
-
-  return resolvedPath || process.cwd();
+type WorkspaceContextPayload = {
+  summary: WorkspaceContextSummary;
+  prompt: string;
 };
 
-export const resolveWorkspaceRoot = async (inputPath?: string) => {
-  const candidatePath = inputPath?.trim() ? inputPath.trim() : getWorkspaceRootFromTerminal();
-  const absolutePath = path.resolve(candidatePath);
+type WorkspaceCacheEntry = {
+  expiresAt: number;
+  payload: WorkspaceContextPayload;
+};
+
+const isSkippableFsError = (error: unknown) => {
+  if (!(error instanceof Error) || !('code' in error)) {
+    return false;
+  }
+
+  const code = String(error.code);
+  return code === 'EPERM' || code === 'EACCES' || code === 'ENOENT';
+};
+
+const workspacePayloadCache = new Map<string, WorkspaceCacheEntry>();
+const inFlightWorkspacePayloads = new Map<string, Promise<WorkspaceContextPayload>>();
+
+export const getWorkspaceRootFromTerminal = () => process.cwd();
+
+export const resolveWorkspaceRoot = async (
+  inputPath?: string,
+  currentRoot = getWorkspaceRootFromTerminal(),
+) => {
+  const candidatePath = inputPath?.trim() ? inputPath.trim() : currentRoot;
+  const absolutePath = path.resolve(currentRoot, candidatePath);
   const details = await stat(absolutePath);
 
   if (!details.isDirectory()) {
@@ -97,7 +113,18 @@ const shouldIncludeFile = (filePath: string) => {
 };
 
 const collectFiles = async (rootDir: string, currentDir = rootDir): Promise<string[]> => {
-  const entries = await readdir(currentDir, { withFileTypes: true });
+  let entries;
+
+  try {
+    entries = await readdir(currentDir, { withFileTypes: true });
+  } catch (error) {
+    if (isSkippableFsError(error)) {
+      return [];
+    }
+
+    throw error;
+  }
+
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -132,20 +159,32 @@ const toCodeFence = (filePath: string) => {
 
 const readSnippet = async (rootDir: string, filePath: string) => {
   const absolutePath = path.join(rootDir, filePath);
-  const content = await Bun.file(absolutePath).text();
+  let content = '';
+
+  try {
+    content = await Bun.file(absolutePath).text();
+  } catch (error) {
+    if (isSkippableFsError(error)) {
+      return '';
+    }
+
+    throw error;
+  }
 
   return content.slice(0, MAX_FILE_CHARS).trim();
 };
 
 const collectWorkspaceContext = async (rootDir: string) => {
   const files = (await collectFiles(rootDir)).slice(0, MAX_FILES);
+  const readResults = await Promise.all(
+    files.map(async (filePath) => ({ filePath, snippet: await readSnippet(rootDir, filePath) })),
+  );
+
   let usedChars = 0;
   const excerptedFiles: string[] = [];
   const snippets: string[] = [];
 
-  for (const filePath of files) {
-    const snippet = await readSnippet(rootDir, filePath);
-
+  for (const { filePath, snippet } of readResults) {
     if (!snippet) {
       continue;
     }
@@ -172,7 +211,9 @@ const collectWorkspaceContext = async (rootDir: string) => {
   };
 };
 
-export const buildWorkspaceContextPayload = async (rootDir = getWorkspaceRootFromTerminal()) => {
+const createWorkspaceContextPayload = async (
+  rootDir = getWorkspaceRootFromTerminal(),
+): Promise<WorkspaceContextPayload> => {
   const { summary, snippets } = await collectWorkspaceContext(rootDir);
 
   return {
@@ -190,6 +231,48 @@ export const buildWorkspaceContextPayload = async (rootDir = getWorkspaceRootFro
       }),
     ].join('\n'),
   };
+};
+
+export const invalidateWorkspaceContext = (rootDir?: string) => {
+  if (rootDir) {
+    workspacePayloadCache.delete(rootDir);
+    inFlightWorkspacePayloads.delete(rootDir);
+    return;
+  }
+
+  workspacePayloadCache.clear();
+  inFlightWorkspacePayloads.clear();
+};
+
+export const buildWorkspaceContextPayload = async (rootDir = getWorkspaceRootFromTerminal()) => {
+  const now = Date.now();
+  const cachedEntry = workspacePayloadCache.get(rootDir);
+
+  if (cachedEntry && cachedEntry.expiresAt > now) {
+    return cachedEntry.payload;
+  }
+
+  const existingRequest = inFlightWorkspacePayloads.get(rootDir);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = createWorkspaceContextPayload(rootDir)
+    .then((payload) => {
+      workspacePayloadCache.set(rootDir, {
+        expiresAt: Date.now() + WORKSPACE_CACHE_TTL_MS,
+        payload,
+      });
+
+      return payload;
+    })
+    .finally(() => {
+      inFlightWorkspacePayloads.delete(rootDir);
+    });
+
+  inFlightWorkspacePayloads.set(rootDir, request);
+  return request;
 };
 
 export const buildWorkspaceContext = async (rootDir = getWorkspaceRootFromTerminal()) =>

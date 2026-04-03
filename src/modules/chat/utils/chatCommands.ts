@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { resolveWorkspaceRoot } from '../../../services/workspaceContext';
+import { invalidateWorkspaceContext, resolveWorkspaceRoot } from '../../../services/workspaceContext';
 
 export const extractFileContent = (rawContent: string) => {
   const trimmed = rawContent.trim();
@@ -36,6 +36,7 @@ export const createFileFromResponse = async (text: string, workspaceRoot: string
   const outputPath = path.isAbsolute(fileName) ? fileName : path.join(workspaceRoot, fileName);
 
   await Bun.write(outputPath, fileContent.trim());
+  invalidateWorkspaceContext(workspaceRoot);
   return `${text}\n\nFile "${fileName}" created successfully in "${workspaceRoot}".`;
 };
 
@@ -54,7 +55,14 @@ export const handleWorkspaceCommand = async (
     };
   }
 
-  const switchMatch = trimmed.match(/^(?:pwd|cd)\s+(.+)$/i);
+  if (/^pwd\s+/i.test(trimmed)) {
+    return {
+      handled: true,
+      statusMessage: 'Use `pwd` to print the current workspace, or `cd <path>` to change it.',
+    };
+  }
+
+  const switchMatch = trimmed.match(/^cd\s+(.+)$/i);
 
   if (!switchMatch) {
     return { handled: false };
@@ -70,7 +78,7 @@ export const handleWorkspaceCommand = async (
   }
 
   try {
-    const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath);
+    const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath, workspaceRoot);
     onWorkspaceRootChange(nextWorkspaceRoot);
 
     return {

@@ -1,4 +1,4 @@
-import ollama from 'ollama';
+import { Ollama } from 'ollama';
 import type { ChatMessage, ChatResult } from '../types/model';
 import { buildWorkspaceContextPayload } from './workspaceContext';
 
@@ -28,8 +28,53 @@ const normalizeAssistantContent = (content: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const DEFAULT_OLLAMA_HOSTS = ['http://127.0.0.1:11434', 'http://localhost:11434'];
+let activeOllamaHost = '';
+
+const isConnectionError = (error: unknown) =>
+  error instanceof Error && /fetch failed|ECONNREFUSED|connect|ENOTFOUND|EHOSTUNREACH|socket/i.test(error.message);
+
+const getOllamaHosts = () => {
+  const configuredHosts = process.env.OLLAMA_HOST
+    ?.split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+
+  const hosts = configuredHosts?.length ? configuredHosts : DEFAULT_OLLAMA_HOSTS;
+
+  return [...new Set([activeOllamaHost, ...hosts].filter(Boolean))];
+};
+
+const formatConnectionFailure = (hosts: string[], lastError: unknown) => {
+  const lastMessage = lastError instanceof Error ? lastError.message.trim() : 'Unknown connection error.';
+  return new Error(`Unable to reach Ollama at: ${hosts.join(', ')}. ${lastMessage}`);
+};
+
+const withOllamaClient = async <T>(operation: (client: Ollama, host: string) => Promise<T>): Promise<T> => {
+  const hosts = getOllamaHosts();
+  let lastConnectionError: unknown = null;
+
+  for (const host of hosts) {
+    try {
+      const client = new Ollama({ host });
+      const result = await operation(client, host);
+      activeOllamaHost = host;
+      return result;
+    } catch (error) {
+      if (isConnectionError(error)) {
+        lastConnectionError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw formatConnectionFailure(hosts, lastConnectionError);
+};
+
 export const listModelNames = async (): Promise<string[]> => {
-  const result = await ollama.list();
+  const result = await withOllamaClient((client) => client.list());
 
   return (result.models ?? [])
     .map((model) => model.name?.trim())
@@ -43,16 +88,18 @@ export const chatWithModel = async (
 ): Promise<ChatResult> => {
   const { prompt: workspaceContext, summary: workspaceSummary } =
     await buildWorkspaceContextPayload(workspaceRoot);
-  const res = await ollama.chat({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: `${SHELLAMA_SYSTEM_PROMPT}\n\n${workspaceContext}`,
-      },
-      ...messages,
-    ],
-  });
+  const res = await withOllamaClient((client) =>
+    client.chat({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: `${SHELLAMA_SYSTEM_PROMPT}\n\n${workspaceContext}`,
+        },
+        ...messages,
+      ],
+    }),
+  );
 
   return {
     content: normalizeAssistantContent(res.message.content),
