@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama';
 import type { ChatMessage, ChatResult } from '../types/model';
+import { buildProjectRulesPayload } from './rulesEngine';
 import { buildWorkspaceContextPayload } from './workspaceContext';
 
 const SHELLAMA_SYSTEM_PROMPT = `You are Shellama, a workspace-aware assistant for the user's current folder.
@@ -13,7 +14,22 @@ Behave like a concise terminal copilot:
 - Do not use Markdown headings, bold markers, tables, blockquotes, or fenced code blocks unless the user explicitly asks for Markdown.
 - If you need to show code, provide the raw code only.
 - When generating files, use the exact format CREATE_FILE: path/to/file.ext CONTENT: <file contents>.
+- If the user asks for multiple files, emit one CREATE_FILE block per file.
 - For CREATE_FILE responses, output only the file content after CONTENT:. Do not add Markdown fences, explanations, or trailing comments.`;
+
+const SHELLAMA_RULES_CONTRACT = `Rules contract:
+- Treat the project rules file as binding guidance for architecture, DRY, modularity, and typing unless the user explicitly overrides it.
+- Before proposing new code, check the supplied workspace context for existing utilities, services, or patterns you can reuse.
+- When the user asks for a code or file change, respond in this order:
+PLAN:
+- Describe where the change belongs and how it avoids duplication.
+REVIEW:
+- Briefly explain the design pattern, architectural decision, or structural rule you applied.
+IMPLEMENTATION:
+- Give the result summary.
+- If you create files, append one CREATE_FILE block per file after the sections above.
+- Keep CREATE_FILE content raw and free of commentary.
+- If the request conflicts with the project rules, explain the conflict and propose a refactor instead of forcing the change.`;
 
 const normalizeAssistantContent = (content: string) =>
   content
@@ -88,13 +104,18 @@ export const chatWithModel = async (
 ): Promise<ChatResult> => {
   const { prompt: workspaceContext, summary: workspaceSummary } =
     await buildWorkspaceContextPayload(workspaceRoot);
+  const { prompt: projectRules } = await buildProjectRulesPayload(
+    workspaceRoot ?? process.cwd(),
+  );
   const res = await withOllamaClient((client) =>
     client.chat({
       model,
       messages: [
         {
           role: 'system',
-          content: `${SHELLAMA_SYSTEM_PROMPT}\n\n${workspaceContext}`,
+          content: [SHELLAMA_SYSTEM_PROMPT, projectRules, SHELLAMA_RULES_CONTRACT, workspaceContext].join(
+            '\n\n',
+          ),
         },
         ...messages,
       ],
