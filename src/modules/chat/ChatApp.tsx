@@ -225,10 +225,6 @@ export const ChatApp = () => {
         </Box>
       )}
 
-      {!isSelectingModel && (
-        <ChatComposer accentColor={accentColor} query={query} setQuery={setQuery} onSubmit={handleSubmit} />
-      )}
-
       {isSelectingModel && !loadingModels && (
         <Box marginTop={1}>
           <Text color="gray">Select a model with arrow keys and press Enter.</Text>
@@ -250,6 +246,10 @@ export const ChatApp = () => {
 
         {messages.length > 0 && <ConversationPanel accentColor={accentColor} messages={messages} />}
       </Box>
+
+      {!isSelectingModel && (
+        <ChatComposer accentColor={accentColor} query={query} setQuery={setQuery} onSubmit={handleSubmit} />
+      )}
     </Box>
   );
 };

@@ -1,5 +1,6 @@
-import ollama from 'ollama';
+import { Ollama } from 'ollama';
 import type { ChatMessage, ChatResult } from '../types/model';
+import { buildProjectRulesPayload } from './rulesEngine';
 import { buildWorkspaceContextPayload } from './workspaceContext';
 
 const SHELLAMA_SYSTEM_PROMPT = `You are Shellama, a workspace-aware assistant for the user's current folder.
@@ -13,7 +14,22 @@ Behave like a concise terminal copilot:
 - Do not use Markdown headings, bold markers, tables, blockquotes, or fenced code blocks unless the user explicitly asks for Markdown.
 - If you need to show code, provide the raw code only.
 - When generating files, use the exact format CREATE_FILE: path/to/file.ext CONTENT: <file contents>.
+- If the user asks for multiple files, emit one CREATE_FILE block per file.
 - For CREATE_FILE responses, output only the file content after CONTENT:. Do not add Markdown fences, explanations, or trailing comments.`;
+
+const SHELLAMA_RULES_CONTRACT = `Rules contract:
+- Treat the project rules file as binding guidance for architecture, DRY, modularity, and typing unless the user explicitly overrides it.
+- Before proposing new code, check the supplied workspace context for existing utilities, services, or patterns you can reuse.
+- When the user asks for a code or file change, respond in this order:
+PLAN:
+- Describe where the change belongs and how it avoids duplication.
+REVIEW:
+- Briefly explain the design pattern, architectural decision, or structural rule you applied.
+IMPLEMENTATION:
+- Give the result summary.
+- If you create files, append one CREATE_FILE block per file after the sections above.
+- Keep CREATE_FILE content raw and free of commentary.
+- If the request conflicts with the project rules, explain the conflict and propose a refactor instead of forcing the change.`;
 
 const normalizeAssistantContent = (content: string) =>
   content
@@ -28,8 +44,53 @@ const normalizeAssistantContent = (content: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const DEFAULT_OLLAMA_HOSTS = ['http://127.0.0.1:11434', 'http://localhost:11434'];
+let activeOllamaHost = '';
+
+const isConnectionError = (error: unknown) =>
+  error instanceof Error && /fetch failed|ECONNREFUSED|connect|ENOTFOUND|EHOSTUNREACH|socket/i.test(error.message);
+
+const getOllamaHosts = () => {
+  const configuredHosts = process.env.OLLAMA_HOST
+    ?.split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+
+  const hosts = configuredHosts?.length ? configuredHosts : DEFAULT_OLLAMA_HOSTS;
+
+  return [...new Set([activeOllamaHost, ...hosts].filter(Boolean))];
+};
+
+const formatConnectionFailure = (hosts: string[], lastError: unknown) => {
+  const lastMessage = lastError instanceof Error ? lastError.message.trim() : 'Unknown connection error.';
+  return new Error(`Unable to reach Ollama at: ${hosts.join(', ')}. ${lastMessage}`);
+};
+
+const withOllamaClient = async <T>(operation: (client: Ollama, host: string) => Promise<T>): Promise<T> => {
+  const hosts = getOllamaHosts();
+  let lastConnectionError: unknown = null;
+
+  for (const host of hosts) {
+    try {
+      const client = new Ollama({ host });
+      const result = await operation(client, host);
+      activeOllamaHost = host;
+      return result;
+    } catch (error) {
+      if (isConnectionError(error)) {
+        lastConnectionError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw formatConnectionFailure(hosts, lastConnectionError);
+};
+
 export const listModelNames = async (): Promise<string[]> => {
-  const result = await ollama.list();
+  const result = await withOllamaClient((client) => client.list());
 
   return (result.models ?? [])
     .map((model) => model.name?.trim())
@@ -43,16 +104,23 @@ export const chatWithModel = async (
 ): Promise<ChatResult> => {
   const { prompt: workspaceContext, summary: workspaceSummary } =
     await buildWorkspaceContextPayload(workspaceRoot);
-  const res = await ollama.chat({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: `${SHELLAMA_SYSTEM_PROMPT}\n\n${workspaceContext}`,
-      },
-      ...messages,
-    ],
-  });
+  const { prompt: projectRules } = await buildProjectRulesPayload(
+    workspaceRoot ?? process.cwd(),
+  );
+  const res = await withOllamaClient((client) =>
+    client.chat({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: [SHELLAMA_SYSTEM_PROMPT, projectRules, SHELLAMA_RULES_CONTRACT, workspaceContext].join(
+            '\n\n',
+          ),
+        },
+        ...messages,
+      ],
+    }),
+  );
 
   return {
     content: normalizeAssistantContent(res.message.content),

@@ -1,6 +1,8 @@
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import { resolveWorkspaceRoot } from '../../../services/workspaceContext';
+import { invalidateProjectRules } from '../../../services/rulesEngine';
+import { invalidateWorkspaceContext, resolveWorkspaceRoot } from '../../../services/workspaceContext';
 
 export const extractFileContent = (rawContent: string) => {
   const trimmed = rawContent.trim();
@@ -19,24 +21,50 @@ export const extractFileContent = (rawContent: string) => {
   return trimmed;
 };
 
-export const createFileFromResponse = async (text: string, workspaceRoot: string) => {
-  const match = text.match(/CREATE_FILE:\s+([^\s]+)\s+CONTENT:\s+([\s\S]+)/);
+const parseCreateFileBlocks = (text: string) => {
+  const matches = [
+    ...text.matchAll(
+      /CREATE_FILE:\s+([^\s]+)(?:\s+CONTENT:\s*|\n)([\s\S]*?)(?=\nCREATE_FILE:\s+|\s*$)/g,
+    ),
+  ];
 
-  if (!match) {
+  return matches
+    .map((match) => {
+      const fileName = match[1]?.trim() ?? '';
+      const rawFileContent = match[2] ?? '';
+
+      return {
+        fileName,
+        fileContent: extractFileContent(rawFileContent),
+      };
+    })
+    .filter((entry) => entry.fileName && entry.fileContent);
+};
+
+export const createFileFromResponse = async (text: string, workspaceRoot: string) => {
+  if (!/PLAN:\s*/i.test(text) || !/REVIEW:\s*/i.test(text)) {
+    return `${text}\n\nUnable to create file: missing required PLAN or REVIEW section before file creation.`;
+  }
+
+  const filesToCreate = parseCreateFileBlocks(text);
+
+  if (filesToCreate.length === 0) {
     return `${text}\n\nUnable to create file: invalid file creation format.`;
   }
 
-  const [, fileName = '', rawFileContent = ''] = match;
-  const fileContent = extractFileContent(rawFileContent);
+  for (const { fileName, fileContent } of filesToCreate) {
+    const outputPath = path.isAbsolute(fileName) ? fileName : path.join(workspaceRoot, fileName);
+    const outputDir = path.dirname(outputPath);
 
-  if (!fileName || !fileContent) {
-    return `${text}\n\nUnable to create file: missing file content.`;
+    await mkdir(outputDir, { recursive: true });
+    await Bun.write(outputPath, fileContent.trim());
   }
 
-  const outputPath = path.isAbsolute(fileName) ? fileName : path.join(workspaceRoot, fileName);
+  invalidateWorkspaceContext(workspaceRoot);
+  invalidateProjectRules(workspaceRoot);
+  const createdFilesLabel = filesToCreate.map(({ fileName }) => `"${fileName}"`).join(', ');
 
-  await Bun.write(outputPath, fileContent.trim());
-  return `${text}\n\nFile "${fileName}" created successfully in "${workspaceRoot}".`;
+  return `${text}\n\nCreated ${filesToCreate.length} file(s) in "${workspaceRoot}": ${createdFilesLabel}.`;
 };
 
 export const handleWorkspaceCommand = async (
@@ -54,7 +82,14 @@ export const handleWorkspaceCommand = async (
     };
   }
 
-  const switchMatch = trimmed.match(/^(?:pwd|cd)\s+(.+)$/i);
+  if (/^pwd\s+/i.test(trimmed)) {
+    return {
+      handled: true,
+      statusMessage: 'Use `pwd` to print the current workspace, or `cd <path>` to change it.',
+    };
+  }
+
+  const switchMatch = trimmed.match(/^cd\s+(.+)$/i);
 
   if (!switchMatch) {
     return { handled: false };
@@ -70,7 +105,7 @@ export const handleWorkspaceCommand = async (
   }
 
   try {
-    const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath);
+    const nextWorkspaceRoot = await resolveWorkspaceRoot(requestedPath, workspaceRoot);
     onWorkspaceRootChange(nextWorkspaceRoot);
 
     return {

@@ -87,6 +87,51 @@ On startup, Shellama resolves that workspace directly from the terminal session 
 
 Shellama now sends the current workspace files along with your prompts, so local Ollama models behave more like a lightweight workspace-aware assistant instead of a plain chat box.
 
+You can also add workspace-level engineering rules by creating one of these files in the active project root:
+
+```text
+rules.conf
+rules.md
+rules.json
+.shellama/rules.conf
+```
+
+Shellama injects that rules file into the system prompt on every request. For code or file-generation requests, it now asks the model to use a plan-then-execute flow:
+
+```text
+PLAN:
+- where the change belongs
+- how it avoids duplication
+
+REVIEW:
+- which design pattern or structural rule was applied
+
+IMPLEMENTATION:
+- concise summary
+
+CREATE_FILE: path/to/file.ext
+CONTENT:
+<raw file contents>
+```
+
+If a generated file response does not include both `PLAN:` and `REVIEW:`, Shellama will refuse to write the file.
+
+Example `rules.conf`:
+
+```text
+Architecture:
+- Always use the Service-Repository pattern for data handling.
+
+DRY Principle:
+- Before creating a new function, check whether the logic already exists in src/utils.
+
+Type Safety:
+- Use TypeScript interfaces for data structures; avoid any.
+
+Review Step:
+- For every file edit, explain which design pattern or structural choice was applied.
+```
+
 Usage tips:
 
 ```text
